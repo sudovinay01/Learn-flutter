@@ -65,7 +65,10 @@ without re-encoding.
   stream used as a QT chapter-track placeholder; FFmpeg may omit it during
   remuxing. Ignore a missing data stream only when FFprobe packet counting
   confirms its packet count is zero or unavailable (`N/A`); never ignore
-  missing video, audio, or non-empty data streams.
+  missing video, audio, or non-empty data streams. For the app's viewing use
+  case, deliberately omit MP4 `tmcd` timecode data tracks because FFmpeg
+  cannot remux these unsupported codec-none tracks; tell the user when this
+  production timecode metadata is discarded.
 - Preserve chapter timing while removing chapter title metadata. FFprobe can
   report generated labels such as `Chapter 1` even when FFmpeg's output has no
   chapter title metadata; treat only the exact, index-matching `Chapter N`

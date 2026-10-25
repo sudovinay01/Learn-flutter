@@ -1,6 +1,20 @@
 import 'package:ffmpeg_kit_flutter_new_min/media_information.dart';
 
 class Mp4MetadataVerifier {
+  static List<int> timecodeDataStreamIndexes(MediaInformation information) {
+    final streams = information.getStreams();
+    final indexes = <int>[];
+    for (var index = 0; index < streams.length; index++) {
+      final stream = streams[index];
+      final properties = stream.getAllProperties();
+      final codecTag = properties?['codec_tag_string']?.toString();
+      if (stream.getType() == 'data' && codecTag?.toLowerCase() == 'tmcd') {
+        indexes.add(index);
+      }
+    }
+    return indexes;
+  }
+
   static bool hasTitleTag(MediaInformation information) {
     if (_hasNonEmptyTitle(information.getTags())) return true;
     for (final stream in information.getStreams()) {

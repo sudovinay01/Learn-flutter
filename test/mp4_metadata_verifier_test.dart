@@ -12,6 +12,18 @@ void main() {
     ],
   });
 
+  test('identifies only MP4 timecode data streams', () {
+    final information = MediaInformation({
+      'streams': [
+        {'index': 0, 'codec_type': 'video', 'codec_tag_string': 'avc1'},
+        {'index': 1, 'codec_type': 'data', 'codec_tag_string': 'tmcd'},
+        {'index': 2, 'codec_type': 'data', 'codec_tag_string': 'text'},
+      ],
+    });
+
+    expect(Mp4MetadataVerifier.timecodeDataStreamIndexes(information), [1]);
+  });
+
   test('accepts an empty chapter title tag left by FFmpeg', () {
     expect(
       Mp4MetadataVerifier.hasTitleTag(informationWithChapter('')),

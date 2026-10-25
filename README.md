@@ -27,7 +27,8 @@ Chapter timing is preserved while chapter title tags are removed.
 Empty or whitespace-only title values left by the media tools are treated as
 cleared; non-empty title values still fail verification. A data stream is
 ignored only if FFprobe confirms it contains no packets; non-empty streams must
-still be preserved.
+still be preserved. MP4 timecode (`tmcd`) data tracks are omitted for viewing
+compatibility; they contain production timecode metadata, not video or audio.
 The original filename and folder location are kept. If processing or
 verification fails, the original is left in place. Stopping a batch takes
 effect after the current file is safely handled.

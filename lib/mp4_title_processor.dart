@@ -115,14 +115,29 @@ class Mp4TitleProcessor {
         status = 'skipped';
         completionMessage = 'No title metadata was found.';
       } else {
+        final timecodeStreamIndexes =
+            Mp4MetadataVerifier.timecodeDataStreamIndexes(sourceInformation);
+        final ignoredSourceStreamIndexes = timecodeStreamIndexes.toSet();
+        if (timecodeStreamIndexes.isNotEmpty) {
+          verificationDiagnostics.add(
+            'Omitting timecode data stream(s) for viewing compatibility: '
+            '${timecodeStreamIndexes.join(', ')}',
+          );
+        }
         final ffmpegArguments = <String>[
           '-hide_banner',
           '-nostdin',
           '-y',
           '-i',
           inputFile.path,
-          '-map',
-          '0',
+        ];
+        final sourceStreams = sourceInformation.getStreams();
+        for (var index = 0; index < sourceStreams.length; index++) {
+          final streamIndex = sourceStreams[index].getIndex() ?? index;
+          if (timecodeStreamIndexes.contains(index)) continue;
+          ffmpegArguments.addAll(['-map', '0:$streamIndex']);
+        }
+        ffmpegArguments.addAll([
           '-map_metadata',
           '0',
           '-map_chapters',
@@ -133,7 +148,10 @@ class Mp4TitleProcessor {
           'title=',
           '-metadata:s',
           'title=',
-        ];
+        ]);
+        if (timecodeStreamIndexes.isNotEmpty) {
+          ffmpegArguments.addAll(['-metadata:s:v', 'timecode=']);
+        }
         if (sourceInformation.getChapters().isNotEmpty) {
           ffmpegArguments.addAll(['-metadata:c', 'title=']);
         }
@@ -164,6 +182,7 @@ class Mp4TitleProcessor {
         var streamIssue = _streamPreservationIssue(
           sourceInformation,
           resultInformation,
+          ignoredOriginalStreamIndexes: ignoredSourceStreamIndexes,
         );
         if (streamIssue != null) {
           final sourcePacketCounts = await _streamPacketCounts(inputFile.path);
@@ -174,7 +193,6 @@ class Mp4TitleProcessor {
             'Output:\n${outputPacketCounts.describe()}',
           );
           if (sourcePacketCounts.problem == null) {
-            final sourceStreams = sourceInformation.getStreams();
             for (var index = 0; index < sourceStreams.length; index++) {
               final stream = sourceStreams[index];
               final streamIndex = stream.getIndex() ?? index;
@@ -189,10 +207,11 @@ class Mp4TitleProcessor {
                 'Ignored confirmed empty data stream indexes: '
                 '${emptyDataStreamIndexes.join(', ')}',
               );
+              ignoredSourceStreamIndexes.addAll(emptyDataStreamIndexes);
               streamIssue = _streamPreservationIssue(
                 sourceInformation,
                 resultInformation,
-                ignoredOriginalStreamIndexes: emptyDataStreamIndexes,
+                ignoredOriginalStreamIndexes: ignoredSourceStreamIndexes,
               );
             }
           }
@@ -237,7 +256,7 @@ class Mp4TitleProcessor {
           final copiedStreamIssue = _streamPreservationIssue(
             sourceInformation,
             copiedInformation,
-            ignoredOriginalStreamIndexes: emptyDataStreamIndexes,
+            ignoredOriginalStreamIndexes: ignoredSourceStreamIndexes,
           );
           if (copiedStreamIssue != null) {
             throw StateError(
@@ -272,7 +291,10 @@ class Mp4TitleProcessor {
             }
 
             status = 'updated';
-            completionMessage = 'Title metadata removed; filename unchanged.';
+            completionMessage = timecodeStreamIndexes.isEmpty
+                ? 'Title metadata removed; filename unchanged.'
+                : 'Title metadata removed; timecode metadata discarded for '
+                      'viewing compatibility; filename unchanged.';
             try {
               await _saf.delete(backupFile.uri);
             } catch (cleanupError) {
