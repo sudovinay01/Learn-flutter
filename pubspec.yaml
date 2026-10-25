@@ -7,8 +7,13 @@ environment:
   sdk: ^3.13.5
 
 dependencies:
+  dynamic_color: ^2.1.0
+  ffmpeg_kit_flutter_new_min: ^3.6.7
   flutter:
     sdk: flutter
+  flutter_foreground_task: ^11.0.3
+  path_provider: ^2.1.6
+  saf: ^2.1.2
 
 dev_dependencies:
   flutter_test:
