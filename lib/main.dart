@@ -8,7 +8,12 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:saf/saf.dart';
 
 import 'mp4_background_task.dart';
+import 'processing_capacity.dart';
 import 'mp4_title_processor.dart';
+
+const _processingResourcesChannel = MethodChannel(
+  'mp4_title_cleaner/processing_resources',
+);
 
 void main() {
   FlutterForegroundTask.initCommunicationPort();
@@ -114,11 +119,17 @@ class _Mp4TitleCleanerAppState extends State<Mp4TitleCleanerApp> {
 enum _ResultStatus { pending, processing, updated, skipped, failed, cancelled }
 
 class _FileResult {
-  const _FileResult({required this.target, required this.status, this.message});
+  const _FileResult({
+    required this.target,
+    required this.status,
+    this.message,
+    this.log,
+  });
 
   final Mp4Target target;
   final _ResultStatus status;
   final String? message;
+  final String? log;
 }
 
 class Mp4TitleCleanerPage extends StatefulWidget {
@@ -139,6 +150,8 @@ class _Mp4TitleCleanerPageState extends State<Mp4TitleCleanerPage> {
   bool _cancelRequested = false;
   int _processedCount = 0;
   int _operationTotal = 0;
+  int _activeWorkers = 0;
+  int _maxConcurrentFiles = 1;
   String? _currentFile;
 
   @override
@@ -171,6 +184,9 @@ class _Mp4TitleCleanerPageState extends State<Mp4TitleCleanerPage> {
       final operationTargetsJson = await FlutterForegroundTask.getData<String>(
         key: 'mp4_job_targets',
       );
+      final maxConcurrentFiles = await FlutterForegroundTask.getData<int>(
+        key: 'mp4_max_concurrent_files',
+      );
       if (allFilesJson == null) return;
 
       final files = _decodeTargets(allFilesJson);
@@ -189,6 +205,7 @@ class _Mp4TitleCleanerPageState extends State<Mp4TitleCleanerPage> {
         _files = files;
         _results = results;
         _operationTargets = operationTargets;
+        _maxConcurrentFiles = (maxConcurrentFiles ?? 1).clamp(1, 2).toInt();
         _selectedFolder = SafDocumentFile(
           uri: '',
           name: folderName ?? 'Selected folder',
@@ -325,8 +342,9 @@ class _Mp4TitleCleanerPageState extends State<Mp4TitleCleanerPage> {
           'folder locations. Originals are replaced only after the temporary '
           'result is verified.\n\n'
           'Processing continues in the background with an ongoing '
-          'notification. Each file is processed separately and temporary '
-          'storage is required.',
+          'notification. The app may process up to two files at once '
+          'when device resources and free space allow; otherwise it works '
+          'one at a time. Temporary storage is required.',
         ),
         actions: [
           TextButton(
@@ -371,6 +389,7 @@ class _Mp4TitleCleanerPageState extends State<Mp4TitleCleanerPage> {
         'mp4_job_state',
         'mp4_job_targets',
         'mp4_job_cancel_requested',
+        'mp4_max_concurrent_files',
       ]) {
         final removed = await FlutterForegroundTask.removeData(key: key);
         if (!removed) {
@@ -386,6 +405,8 @@ class _Mp4TitleCleanerPageState extends State<Mp4TitleCleanerPage> {
         _operationTargets = const [];
         _processedCount = 0;
         _operationTotal = 0;
+        _activeWorkers = 0;
+        _maxConcurrentFiles = 1;
         _currentFile = null;
         _cancelRequested = false;
       });
@@ -419,9 +440,44 @@ class _Mp4TitleCleanerPageState extends State<Mp4TitleCleanerPage> {
         return;
       }
 
+      var resources = const ProcessingResources(
+        availableProcessors: null,
+        availableMemoryBytes: null,
+        cacheAvailableBytes: null,
+        folderAvailableBytes: null,
+      );
+      try {
+        final values = await _processingResourcesChannel
+            .invokeMapMethod<String, Object?>('getResources', {
+              'folderUri': _selectedFolder?.uri,
+            });
+        if (values != null) {
+          resources = ProcessingResources.fromMap(values);
+        }
+      } on PlatformException catch (error) {
+        debugPrint('Could not assess processing resources: $error');
+      } on MissingPluginException catch (error) {
+        debugPrint('Processing resource probe is unavailable: $error');
+      } on TypeError catch (error) {
+        debugPrint('Processing resource information was invalid: $error');
+      }
+      final maxConcurrentFiles = ProcessingCapacity.forBatch(files, resources);
+      final filesToProcess = files.map((file) => file.fileUri).toSet();
+      _results = _results
+          .map(
+            (result) => filesToProcess.contains(result.target.fileUri)
+                ? _FileResult(
+                    target: result.target,
+                    status: _ResultStatus.pending,
+                  )
+                : result,
+          )
+          .toList();
       _operationTargets = files;
       _operationTotal = files.length;
       _processedCount = 0;
+      _activeWorkers = 0;
+      _maxConcurrentFiles = maxConcurrentFiles;
       _cancelRequested = false;
       await FlutterForegroundTask.saveData(
         key: 'mp4_all_files',
@@ -436,6 +492,10 @@ class _Mp4TitleCleanerPageState extends State<Mp4TitleCleanerPage> {
         value: false,
       );
       await FlutterForegroundTask.saveData(
+        key: 'mp4_max_concurrent_files',
+        value: maxConcurrentFiles,
+      );
+      await FlutterForegroundTask.saveData(
         key: 'mp4_job_results',
         value: jsonEncode(
           _results
@@ -444,6 +504,7 @@ class _Mp4TitleCleanerPageState extends State<Mp4TitleCleanerPage> {
                   ...result.target.toJson(),
                   'status': result.status.name,
                   'message': result.message,
+                  'log': result.log,
                 },
               )
               .toList(),
@@ -507,7 +568,8 @@ class _Mp4TitleCleanerPageState extends State<Mp4TitleCleanerPage> {
         );
         _isProcessing = true;
         _currentFile = target.relativePath;
-        _processedCount = state['index'] as int;
+        _processedCount = state['completed'] as int? ?? _processedCount;
+        _activeWorkers = state['active'] as int? ?? 1;
         _operationTotal = state['total'] as int;
         _operationTargets = _operationTargets.isEmpty
             ? [target]
@@ -522,14 +584,20 @@ class _Mp4TitleCleanerPageState extends State<Mp4TitleCleanerPage> {
             target: target,
             status: _statusFromString(state['status'] as String),
             message: state['message'] as String?,
+            log: state['log'] as String?,
           ),
         );
-        _processedCount = (state['index'] as int) + 1;
+        _processedCount =
+            state['completed'] as int? ?? ((state['index'] as int) + 1);
+        _activeWorkers = state['active'] as int? ?? 0;
+        if (_activeWorkers == 0) _currentFile = null;
         _operationTotal = state['total'] as int;
         break;
       case 'jobFinished':
         _isProcessing = false;
         _currentFile = null;
+        _processedCount = state['completed'] as int? ?? _processedCount;
+        _activeWorkers = 0;
         _cancelRequested = state['cancelled'] as bool? ?? false;
         if (notify) {
           _showMessage(
@@ -543,6 +611,7 @@ class _Mp4TitleCleanerPageState extends State<Mp4TitleCleanerPage> {
       case 'jobInterrupted':
         _isProcessing = false;
         _currentFile = null;
+        _activeWorkers = 0;
         _showError(
           state['message'] as String? ?? 'Background processing stopped.',
         );
@@ -563,6 +632,7 @@ class _Mp4TitleCleanerPageState extends State<Mp4TitleCleanerPage> {
           target: target,
           status: _statusFromString(map['status'] as String),
           message: map['message'] as String?,
+          log: map['log'] as String?,
         ),
       );
     }
@@ -605,6 +675,42 @@ class _Mp4TitleCleanerPageState extends State<Mp4TitleCleanerPage> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message), duration: const Duration(seconds: 4)),
+    );
+  }
+
+  Future<void> _showFailureLog(_FileResult result) async {
+    final log = result.log?.trim();
+    final displayLog = log == null || log.isEmpty
+        ? result.message ?? 'No diagnostic information was recorded.'
+        : log;
+    final shareableLog = 'File: ${result.target.relativePath}\n\n$displayLog';
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Processing log'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: SingleChildScrollView(child: SelectableText(shareableLog)),
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: shareableLog));
+              if (dialogContext.mounted) {
+                Navigator.pop(dialogContext);
+                _showMessage('Processing log copied.');
+              }
+            },
+            icon: const Icon(Icons.copy),
+            label: const Text('Copy log'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -692,12 +798,14 @@ class _Mp4TitleCleanerPageState extends State<Mp4TitleCleanerPage> {
                 LinearProgressIndicator(
                   value: _operationTotal == 0
                       ? null
-                      : _processedCount / _operationTotal,
+                      : (_processedCount / _operationTotal).clamp(0.0, 1.0),
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'File ${_processedCount + 1} of $_operationTotal'
-                  '${_currentFile == null ? '' : '\n$_currentFile'}',
+                  '$_processedCount of $_operationTotal complete · '
+                  '$_activeWorkers active'
+                  '${_maxConcurrentFiles > 1 ? ' (up to 2 at a time)' : ''}'
+                  '${_maxConcurrentFiles == 1 && _currentFile != null ? '\n$_currentFile' : ''}',
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 8),
@@ -705,8 +813,8 @@ class _Mp4TitleCleanerPageState extends State<Mp4TitleCleanerPage> {
                   onPressed: _cancelRequested ? null : _requestCancel,
                   child: Text(
                     _cancelRequested
-                        ? 'Stopping after the current file…'
-                        : 'Stop after the current file',
+                        ? 'Stopping after active files finish…'
+                        : 'Stop after active files finish',
                   ),
                 ),
               ],
@@ -746,12 +854,37 @@ class _Mp4TitleCleanerPageState extends State<Mp4TitleCleanerPage> {
     };
 
     return Card(
-      child: ListTile(
-        leading: Icon(icon, color: color),
-        title: Text(result.target.relativePath),
-        subtitle: result.message == null
-            ? Text('${_formatBytes(result.target.length)} · $label')
-            : Text('$label · ${result.message}'),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            ListTile(
+              leading: Icon(icon, color: color),
+              title: Text(result.target.relativePath),
+              subtitle: result.message == null
+                  ? Text('${_formatBytes(result.target.length)} · $label')
+                  : Text(
+                      '$label · ${result.message}',
+                      maxLines: result.status == _ResultStatus.failed
+                          ? 3
+                          : null,
+                      overflow: result.status == _ResultStatus.failed
+                          ? TextOverflow.ellipsis
+                          : TextOverflow.clip,
+                    ),
+            ),
+            if (result.status == _ResultStatus.failed)
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: () => _showFailureLog(result),
+                  icon: const Icon(Icons.article_outlined),
+                  label: const Text('Show log'),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

@@ -16,8 +16,11 @@ without re-encoding.
 1. The Android Storage Access Framework (SAF) folder picker grants access to a
    folder. The app recursively scans it and lists MP4 targets.
 2. The user reviews the scan and confirms processing.
-3. Android runs the batch in a foreground service with a progress notification.
-   Processing is sequential, cancellable, and reports per-file outcomes.
+3. Before starting the foreground service, Android resource information is
+   checked. The batch uses at most two workers when CPU, available memory,
+   app-cache space, and selected-volume space are sufficient and known;
+   otherwise it uses one worker. Processing is cancellable and reports
+   per-file outcomes.
 4. For each target, the processor copies the source to app cache, uses FFmpeg to
    remux it, verifies the output with FFprobe, writes a temporary result beside
    the source, verifies that copy, and only then replaces the original.
@@ -34,9 +37,17 @@ without re-encoding.
   folder selection and scanning, batch UI, persisted state restoration, and
   clear/retry/cancel actions.
 - `lib/mp4_title_processor.dart` — per-file SAF/cache/FFmpeg/FFprobe processing,
-  verification, replacement, rollback, and cleanup.
+  verification, replacement, rollback, cleanup, and bounded diagnostic logs
+  returned for failed files.
 - `lib/mp4_background_task.dart` — foreground-service entry point, queue
-  processing, notification updates, saved progress, and cancellation handling.
+  processing, bounded concurrent workers, serialized progress persistence and
+  notifications, and cancellation handling.
+- `lib/processing_capacity.dart` — conservative CPU, memory, and storage rules
+  for choosing one or two workers.
+- `android/app/src/main/kotlin/com/example/flutter_application_1/MainActivity.kt`
+  — Android resource probe for processor count, available memory, and free
+  cache/selected-volume space; unknown folder-provider space forces sequential
+  processing.
 - `android/app/src/main/AndroidManifest.xml` — foreground-service permissions
   and service declaration.
 - `android/app/build.gradle.kts` — Android app configuration; minimum SDK is
@@ -50,8 +61,23 @@ without re-encoding.
   result.
 - Never replace the original until the temporary output has passed metadata
   and stream checks.
-- Work on one video at a time. Temporary free space is needed in app cache and
-  in the selected folder.
+- Preserve all streams that contain packets. Some MP4s have an empty data
+  stream used as a QT chapter-track placeholder; FFmpeg may omit it during
+  remuxing. Ignore a missing data stream only when FFprobe packet counting
+  confirms its packet count is zero or unavailable (`N/A`); never ignore
+  missing video, audio, or non-empty data streams.
+- Preserve chapter timing while removing chapter title metadata. FFprobe can
+  report generated labels such as `Chapter 1` even when FFmpeg's output has no
+  chapter title metadata; treat only the exact, index-matching `Chapter N`
+  label as generated. Treat empty or whitespace-only title values as cleared,
+  and continue rejecting all other non-empty chapter title values.
+- Preserve a bounded diagnostic log for failed files so users can inspect and
+  copy the reason for a failure, including stream count/type/codec comparisons
+  and packet counts when media stream verification fails. Truncation must keep
+  both the error and final verification diagnostics.
+- Process no more than two videos at a time. Use one worker if device/storage
+  information is unknown or estimates do not provide safe headroom. Temporary
+  free space is needed in app cache and in the selected folder.
 - Do not clear persisted job state while its foreground service is running.
   The foreground-task plugin stores both job data and its own service
   configuration; remove only the app's job-data keys rather than clearing all

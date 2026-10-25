@@ -7,6 +7,8 @@ import 'package:ffmpeg_kit_flutter_new_min/return_code.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:saf/saf.dart';
 
+import 'mp4_metadata_verifier.dart';
+
 class Mp4Target {
   const Mp4Target({
     required this.fileUri,
@@ -40,17 +42,38 @@ class Mp4Target {
 }
 
 class Mp4ProcessResult {
-  const Mp4ProcessResult({required this.status, this.message});
+  const Mp4ProcessResult({required this.status, this.message, this.log});
 
   final String status;
   final String? message;
+  final String? log;
 
-  Map<String, Object?> toJson() => {'status': status, 'message': message};
+  Map<String, Object?> toJson() => {
+    'status': status,
+    'message': message,
+    'log': log,
+  };
+}
+
+class _StreamPacketProbe {
+  const _StreamPacketProbe({required this.packetCounts, this.problem});
+
+  final Map<int, String> packetCounts;
+  final String? problem;
+
+  String describe() {
+    if (problem != null) return problem!;
+    if (packetCounts.isEmpty) return 'No stream packet counts were returned.';
+    return packetCounts.entries
+        .map((entry) => 'stream ${entry.key}: ${entry.value} packets')
+        .join('\n');
+  }
 }
 
 class Mp4TitleProcessor {
   Mp4TitleProcessor({Saf? saf}) : _saf = saf ?? Saf();
 
+  static int _temporaryFileSequence = 0;
   final Saf _saf;
 
   Future<Mp4ProcessResult> process(
@@ -59,13 +82,17 @@ class Mp4TitleProcessor {
   }) async {
     String? temporaryUri;
     String? failureMessage;
+    String? failureLog;
+    String? ffmpegLog;
+    final verificationDiagnostics = <String>[];
     var status = 'failed';
     String? completionMessage;
     final localFiles = <File>[];
 
     try {
       final cacheDirectory = await getTemporaryDirectory();
-      final uniqueId = DateTime.now().microsecondsSinceEpoch;
+      final uniqueId =
+          '${DateTime.now().microsecondsSinceEpoch}-${_temporaryFileSequence++}';
       final inputFile = File(
         '${cacheDirectory.path}${Platform.pathSeparator}title-cleaner-input-$uniqueId.mp4',
       );
@@ -80,7 +107,11 @@ class Mp4TitleProcessor {
       await _saf.copyToLocalFile(target.fileUri, inputFile.path);
 
       final sourceInformation = await _readMediaInformation(inputFile.path);
-      if (!_hasTitleTag(sourceInformation)) {
+      verificationDiagnostics.add(
+        'Source media information:\n'
+        '${_mediaDiagnostics(sourceInformation)}',
+      );
+      if (!Mp4MetadataVerifier.hasTitleTag(sourceInformation)) {
         status = 'skipped';
         completionMessage = 'No title metadata was found.';
       } else {
@@ -108,25 +139,68 @@ class Mp4TitleProcessor {
         }
         ffmpegArguments.addAll(['-f', 'mp4', outputFile.path]);
         final session = await FFmpegKit.executeWithArguments(ffmpegArguments);
+        ffmpegLog = await session.getAllLogsAsString();
 
         final returnCode = await session.getReturnCode();
         if (!ReturnCode.isSuccess(returnCode)) {
-          final output = await session.getOutput();
           throw StateError(
             'FFmpeg could not rewrite the video. '
-            '${_usefulOutput(output)}',
+            '${_usefulOutput(ffmpegLog)}',
           );
         }
 
         final resultInformation = await _readMediaInformation(outputFile.path);
-        if (_hasTitleTag(resultInformation)) {
+        verificationDiagnostics.add(
+          'FFmpeg output media information:\n'
+          '${_mediaDiagnostics(resultInformation)}',
+        );
+        if (Mp4MetadataVerifier.hasTitleTag(resultInformation)) {
           throw StateError(
-            'The temporary video still contains title metadata.',
+            'The temporary video still contains title metadata in '
+            '${Mp4MetadataVerifier.titleTagLocations(resultInformation)}.',
           );
         }
-        if (!_preservedStreams(sourceInformation, resultInformation)) {
+        final emptyDataStreamIndexes = <int>{};
+        var streamIssue = _streamPreservationIssue(
+          sourceInformation,
+          resultInformation,
+        );
+        if (streamIssue != null) {
+          final sourcePacketCounts = await _streamPacketCounts(inputFile.path);
+          final outputPacketCounts = await _streamPacketCounts(outputFile.path);
+          verificationDiagnostics.add(
+            'FFprobe counted packets by stream:\n'
+            'Source:\n${sourcePacketCounts.describe()}\n'
+            'Output:\n${outputPacketCounts.describe()}',
+          );
+          if (sourcePacketCounts.problem == null) {
+            final sourceStreams = sourceInformation.getStreams();
+            for (var index = 0; index < sourceStreams.length; index++) {
+              final stream = sourceStreams[index];
+              final streamIndex = stream.getIndex() ?? index;
+              final packetCount = sourcePacketCounts.packetCounts[streamIndex];
+              if (stream.getType() == 'data' &&
+                  (packetCount == 'N/A' || packetCount == '0')) {
+                emptyDataStreamIndexes.add(index);
+              }
+            }
+            if (emptyDataStreamIndexes.isNotEmpty) {
+              verificationDiagnostics.add(
+                'Ignored confirmed empty data stream indexes: '
+                '${emptyDataStreamIndexes.join(', ')}',
+              );
+              streamIssue = _streamPreservationIssue(
+                sourceInformation,
+                resultInformation,
+                ignoredOriginalStreamIndexes: emptyDataStreamIndexes,
+              );
+            }
+          }
+        }
+        if (streamIssue != null) {
           throw StateError(
-            'The temporary video did not preserve the original media streams.',
+            'The temporary video did not preserve the original media streams: '
+            '$streamIssue',
           );
         }
 
@@ -150,14 +224,25 @@ class Mp4TitleProcessor {
           final copiedInformation = await _readMediaInformation(
             verifyFile.path,
           );
-          if (_hasTitleTag(copiedInformation)) {
+          verificationDiagnostics.add(
+            'SAF-copied temporary media information:\n'
+            '${_mediaDiagnostics(copiedInformation)}',
+          );
+          if (Mp4MetadataVerifier.hasTitleTag(copiedInformation)) {
             throw StateError(
-              'The copied temporary video still contains title metadata.',
+              'The copied temporary video still contains title metadata in '
+              '${Mp4MetadataVerifier.titleTagLocations(copiedInformation)}.',
             );
           }
-          if (!_preservedStreams(sourceInformation, copiedInformation)) {
+          final copiedStreamIssue = _streamPreservationIssue(
+            sourceInformation,
+            copiedInformation,
+            ignoredOriginalStreamIndexes: emptyDataStreamIndexes,
+          );
+          if (copiedStreamIssue != null) {
             throw StateError(
-              'The copied temporary video did not preserve the original media streams.',
+              'The copied temporary video did not preserve the original media '
+              'streams: $copiedStreamIssue',
             );
           }
           await verifyFile.delete();
@@ -200,6 +285,12 @@ class Mp4TitleProcessor {
     } catch (error) {
       status = 'failed';
       failureMessage = error.toString();
+      failureLog = [
+        error.toString(),
+        if (ffmpegLog != null && ffmpegLog.isNotEmpty) ffmpegLog,
+        if (verificationDiagnostics.isNotEmpty)
+          verificationDiagnostics.join('\n\n'),
+      ].join('\n\n');
     } finally {
       if (temporaryUri != null) {
         try {
@@ -210,6 +301,8 @@ class Mp4TitleProcessor {
           failureMessage = failureMessage == null
               ? cleanupMessage
               : '$failureMessage $cleanupMessage';
+          failureLog =
+              '${failureLog == null ? '' : '$failureLog\n\n'}$cleanupMessage';
           status = 'failed';
         }
       }
@@ -222,6 +315,8 @@ class Mp4TitleProcessor {
           failureMessage = failureMessage == null
               ? cleanupMessage
               : '$failureMessage $cleanupMessage';
+          failureLog =
+              '${failureLog == null ? '' : '$failureLog\n\n'}$cleanupMessage';
           if (status == 'pending' || status == 'processing') {
             status = 'failed';
           }
@@ -232,6 +327,7 @@ class Mp4TitleProcessor {
     return Mp4ProcessResult(
       status: status,
       message: failureMessage ?? completionMessage,
+      log: failureLog == null ? null : _limitDiagnosticLog(failureLog),
     );
   }
 
@@ -247,38 +343,99 @@ class Mp4TitleProcessor {
     return information;
   }
 
-  bool _hasTitleTag(MediaInformation information) {
-    bool hasTitle(Map<dynamic, dynamic>? tags) {
-      if (tags == null) return false;
-      return tags.keys.any((key) => key.toString().toLowerCase() == 'title');
+  String _mediaDiagnostics(MediaInformation information) {
+    final streamLines = <String>[];
+    final streams = information.getStreams();
+    for (var index = 0; index < streams.length; index++) {
+      final stream = streams[index];
+      final properties = stream.getAllProperties();
+      streamLines.add(
+        'Stream $index: index=${stream.getIndex() ?? 'unknown'}, '
+        'type=${stream.getType() ?? 'unknown'}, '
+        'codec=${stream.getCodec() ?? 'unknown'}, '
+        'codec_tag_string=${properties?['codec_tag_string'] ?? 'unknown'}, '
+        'codec_tag=${properties?['codec_tag'] ?? 'unknown'}',
+      );
     }
-
-    if (hasTitle(information.getTags())) return true;
-    for (final stream in information.getStreams()) {
-      if (hasTitle(stream.getTags())) return true;
-    }
-    for (final chapter in information.getChapters()) {
-      if (hasTitle(chapter.getTags())) return true;
-    }
-    return false;
+    return [
+      Mp4MetadataVerifier.titleTagDiagnostics(information),
+      'Streams (${streams.length}):\n${streamLines.join('\n')}',
+    ].join('\n');
   }
 
-  bool _preservedStreams(
+  String? _streamPreservationIssue(
     MediaInformation original,
-    MediaInformation processed,
-  ) {
-    final originalStreams = original.getStreams();
+    MediaInformation processed, {
+    Set<int> ignoredOriginalStreamIndexes = const {},
+  }) {
+    final originalStreams = original
+        .getStreams()
+        .indexed
+        .where((entry) => !ignoredOriginalStreamIndexes.contains(entry.$1))
+        .map((entry) => entry.$2)
+        .toList();
     final processedStreams = processed.getStreams();
-    if (originalStreams.length != processedStreams.length) return false;
+    if (originalStreams.length != processedStreams.length) {
+      return 'stream count changed from ${originalStreams.length} '
+          '(after excluding confirmed empty data streams) to '
+          '${processedStreams.length}.';
+    }
     for (var index = 0; index < originalStreams.length; index++) {
-      if (originalStreams[index].getCodec() !=
-              processedStreams[index].getCodec() ||
-          originalStreams[index].getType() !=
-              processedStreams[index].getType()) {
-        return false;
+      final source = originalStreams[index];
+      final output = processedStreams[index];
+      if (source.getCodec() != output.getCodec() ||
+          source.getType() != output.getType()) {
+        return 'stream $index changed from '
+            '${source.getType() ?? 'unknown'}/${source.getCodec() ?? 'unknown'} '
+            'to ${output.getType() ?? 'unknown'}/'
+            '${output.getCodec() ?? 'unknown'}.';
       }
     }
-    return true;
+    return null;
+  }
+
+  Future<_StreamPacketProbe> _streamPacketCounts(String path) async {
+    final session = await FFprobeKit.executeWithArguments([
+      '-v',
+      'quiet',
+      '-count_packets',
+      '-show_entries',
+      'stream=index,codec_type,codec_name,nb_read_packets',
+      '-of',
+      'csv=p=0',
+      path,
+    ]);
+    final returnCode = await session.getReturnCode();
+    final output = await session.getOutput();
+    if (!ReturnCode.isSuccess(returnCode) || output == null) {
+      return _StreamPacketProbe(
+        packetCounts: const {},
+        problem: 'Packet count probe failed. ${_usefulOutput(output)}',
+      );
+    }
+    final rows = output
+        .split(RegExp(r'\r?\n'))
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .map((line) => line.split(','))
+        .where(
+          (fields) =>
+              fields.length == 4 &&
+              int.tryParse(fields[0]) != null &&
+              fields[1].isNotEmpty &&
+              fields[2].isNotEmpty &&
+              fields[3].isNotEmpty,
+        )
+        .toList();
+    if (rows.isEmpty) {
+      return _StreamPacketProbe(
+        packetCounts: const {},
+        problem: 'No packet-count rows were returned. ${_usefulOutput(output)}',
+      );
+    }
+    return _StreamPacketProbe(
+      packetCounts: {for (final row in rows) int.parse(row[0]): row[3]},
+    );
   }
 
   String _usefulOutput(String? output) {
@@ -287,5 +444,15 @@ class Mp4TitleProcessor {
     return trimmed.length <= 600
         ? trimmed
         : trimmed.substring(trimmed.length - 600);
+  }
+
+  String _limitDiagnosticLog(String log) {
+    const maximumCharacters = 12000;
+    if (log.length <= maximumCharacters) return log;
+    const prefixCharacters = 2000;
+    const suffixCharacters = maximumCharacters - prefixCharacters;
+    return '${log.substring(0, prefixCharacters)}\n'
+        '[Middle of log truncated]\n'
+        '${log.substring(log.length - suffixCharacters)}';
   }
 }
