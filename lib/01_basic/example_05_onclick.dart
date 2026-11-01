@@ -8,6 +8,7 @@ class HelloFlutterApp extends StatefulWidget {
   const HelloFlutterApp({super.key});
 
   @override
+  // ignore: library_private_types_in_public_api
   _HelloFlutterAppState createState() => _HelloFlutterAppState();
 }
 
