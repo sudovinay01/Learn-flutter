@@ -20,6 +20,7 @@ class ContactProfileApp extends StatelessWidget {
               icon: Icon(Icons.star_border),
               color: Colors.white,
               onPressed: () {
+                // ignore: avoid_print
                 print("Contact is starred");
               },
             ),
