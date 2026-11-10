@@ -1,3 +1,5 @@
+// ignore_for_file: non_constant_identifier_names
+
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -41,6 +43,41 @@ class MovieProvider {
   }
 }
 
+class MovieModel {
+  //Class fields for mapping to JSON properties
+  final int id;
+  final num popularity;
+  final int vote_count;
+  final bool video;
+  final String poster_path;
+  final String backdrop_path;
+  final bool adult;
+  final String original_language;
+  final String original_title;
+  final List<dynamic> genre_ids;
+  final String title;
+  final num vote_average;
+  final String overview;
+  final String release_date;
+
+  //Takes JSON formatted map, and returns `MovieModel` object.
+  MovieModel.fromJson(Map<String, dynamic> json)
+    : id = json['id'],
+      popularity = json['popularity'],
+      vote_count = json['vote_count'],
+      video = json['video'],
+      poster_path = json['poster_path'],
+      adult = json['adult'],
+      original_language = json['original_language'],
+      original_title = json['original_title'],
+      genre_ids = json['genre_ids'],
+      title = json['title'],
+      vote_average = json['vote_average'],
+      overview = json['overview'],
+      release_date = json['release_date'],
+      backdrop_path = json['backdrop_path'];
+}
+
 class MoviesListing extends StatefulWidget {
   const MoviesListing({super.key});
 
@@ -52,7 +89,7 @@ class MoviesListing extends StatefulWidget {
 class _MoviesListingState extends State<MoviesListing> {
   //Variable to hold movies information
   // ignore: strict_top_level_inference, prefer_typing_uninitialized_variables
-  var movies;
+  List<MovieModel> movies = [];
   //Method to fetch movies from network
   // ignore: strict_top_level_inference
   fetchMovies() async {
@@ -60,7 +97,10 @@ class _MoviesListingState extends State<MoviesListing> {
     var data = await MovieProvider.getJson();
 
     setState(() {
-      movies = data['results'];
+      List<dynamic> result = data['result'];
+      for (var element in result) {
+        movies.add(MovieModel.fromJson(element));
+      }
     });
   }
 
@@ -72,12 +112,14 @@ class _MoviesListingState extends State<MoviesListing> {
     return Scaffold(
       //SingleChildScrollView to provide scrolling for flexible data rendering
       body: SafeArea(
-        child: SingleChildScrollView(
-          //Print API response on screen.
-          //RESULT: At this point only text 'instance of Response' will be printed
-          child: movies != null
-              ? Text("TMDB Api response\n $movies")
-              : Text("Loading api response"),
+        child: ListView.builder(
+          itemCount: movies.length,
+          itemBuilder: (context, index) {
+            return Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Text(movies[index].title),
+            );
+          },
         ),
       ),
     );
