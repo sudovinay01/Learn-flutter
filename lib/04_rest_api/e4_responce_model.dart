@@ -97,7 +97,7 @@ class _MoviesListingState extends State<MoviesListing> {
     var data = await MovieProvider.getJson();
 
     setState(() {
-      List<dynamic> result = data['result'];
+      List<dynamic> result = data['results'];
       for (var element in result) {
         movies.add(MovieModel.fromJson(element));
       }
