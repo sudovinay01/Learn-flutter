@@ -1,0 +1,247 @@
+import 'package:flutter/material.dart';
+
+void main() => runApp(ContactProfileApp());
+
+// ignore: constant_identifier_names, camel_case_types
+enum APP_THEME { LIGHT, DARK }
+
+class MyAppThemes {
+  static ThemeData appThemeLight() {
+    return ThemeData(
+      brightness: Brightness.light,
+      appBarTheme: AppBarTheme(
+        // ignore: deprecated_member_use
+        color: Colors.white,
+        iconTheme: IconThemeData(color: Colors.black),
+      ),
+      iconTheme: IconThemeData(color: Colors.indigo.shade800),
+      floatingActionButtonTheme: FloatingActionButtonThemeData(
+        backgroundColor: Colors.white,
+        foregroundColor: Colors.black,
+      ),
+    );
+  }
+
+  static ThemeData appThemeDark() {
+    return ThemeData(
+      brightness: Brightness.dark,
+      appBarTheme: AppBarTheme(
+        // ignore: deprecated_member_use
+        color: Colors.black,
+        iconTheme: IconThemeData(color: Colors.white),
+      ),
+      iconTheme: IconThemeData(color: Colors.lightGreen),
+      floatingActionButtonTheme: FloatingActionButtonThemeData(
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+      ),
+    );
+  }
+}
+
+// ignore: use_key_in_widget_constructors
+class ContactProfileApp extends StatefulWidget {
+  @override
+  // ignore: library_private_types_in_public_api
+  _ContactProfilePageState createState() => _ContactProfilePageState();
+}
+
+class _ContactProfilePageState extends State<ContactProfileApp> {
+  var currentTheme = APP_THEME.DARK;
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: currentTheme == APP_THEME.DARK
+          ? MyAppThemes.appThemeDark()
+          : MyAppThemes.appThemeLight(),
+      home: Scaffold(
+        appBar: buildAppBarWidget(),
+        body: buildBodyWidget(),
+        floatingActionButton: FloatingActionButton(
+          child: Icon(Icons.threesixty),
+          onPressed: () {
+            setState(() {
+              currentTheme == APP_THEME.DARK
+                  ? currentTheme = APP_THEME.LIGHT
+                  : currentTheme = APP_THEME.DARK;
+            });
+          },
+        ),
+      ),
+    );
+  }
+
+  ListView buildBodyWidget() {
+    return ListView(
+      children: <Widget>[
+        Column(
+          children: <Widget>[
+            // ignore: sized_box_for_whitespace
+            Container(
+              width: double.infinity,
+              child: Image.network(
+                "https://sudovinay01.github.io/images/profile.jpg",
+                height: 250,
+                fit: BoxFit.cover,
+              ),
+            ),
+            SizedBox(
+              height: 60,
+              child: Row(
+                // mainAxisAlignment is used to align the children of a Row or Column
+                // mainAxisAlignment: MainAxisAlignment.start, // for rows mainAxisAlignment is aligned MainAxisAlignment.start
+                children: <Widget>[
+                  Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: Text(
+                      "Kakashi Uchiha",
+                      style: TextStyle(fontSize: 30),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Divider(color: Colors.grey),
+            Container(
+              margin: const EdgeInsets.only(top: 8, bottom: 8),
+              child: Theme(
+                data: ThemeData(
+                  iconTheme: IconThemeData(color: Colors.lightBlue),
+                ),
+                child: profileActionItems(),
+              ),
+            ),
+            Divider(color: Colors.grey),
+            mobilePhoneListTile(),
+            otherPhoneListTile(),
+            Divider(color: Colors.grey),
+            emailListTile(),
+            Divider(color: Colors.grey),
+            addressListTile(),
+          ],
+        ),
+      ],
+    );
+  }
+
+  AppBar buildAppBarWidget() {
+    return AppBar(
+      // leading is used to display a widget before the title in the AppBar
+      leading: Icon(Icons.arrow_back),
+      // actions is used to display a list of widgets after the title in the AppBar
+      actions: [
+        IconButton(
+          icon: Icon(Icons.star_border),
+          onPressed: () {
+            // ignore: avoid_print
+            print("Contact is starred");
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget profileActionItems() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: <Widget>[
+        buildCallButton(),
+        buildTextButton(),
+        buildVideoCallButton(),
+        buildEmailButton(),
+        buildDirectionsButton(),
+        buildPayButton(),
+      ],
+    );
+  }
+
+  Widget buildCallButton() {
+    return Column(
+      children: <Widget>[
+        IconButton(icon: Icon(Icons.call), onPressed: () {}),
+        Text("Call"),
+      ],
+    );
+  }
+
+  Widget buildTextButton() {
+    return Column(
+      children: <Widget>[
+        IconButton(icon: Icon(Icons.message), onPressed: () {}),
+        Text("Text"),
+      ],
+    );
+  }
+
+  Widget buildVideoCallButton() {
+    return Column(
+      children: <Widget>[
+        IconButton(icon: Icon(Icons.video_call), onPressed: () {}),
+        Text("Video"),
+      ],
+    );
+  }
+
+  Widget buildEmailButton() {
+    return Column(
+      children: <Widget>[
+        IconButton(icon: Icon(Icons.email), onPressed: () {}),
+        Text("Email"),
+      ],
+    );
+  }
+
+  Widget buildDirectionsButton() {
+    return Column(
+      children: <Widget>[
+        IconButton(icon: Icon(Icons.directions), onPressed: () {}),
+        Text("Directions"),
+      ],
+    );
+  }
+
+  Widget buildPayButton() {
+    return Column(
+      children: <Widget>[
+        IconButton(icon: Icon(Icons.attach_money), onPressed: () {}),
+        Text("Pay"),
+      ],
+    );
+  }
+
+  Widget mobilePhoneListTile() {
+    return ListTile(
+      leading: Icon(Icons.call),
+      title: Text("330-803-3390"),
+      subtitle: Text("mobile"),
+      trailing: IconButton(onPressed: () {}, icon: Icon(Icons.message)),
+    );
+  }
+
+  Widget otherPhoneListTile() {
+    return ListTile(
+      leading: Text(""),
+      title: Text("440-440-3390"),
+      subtitle: Text("other"),
+      trailing: IconButton(onPressed: () {}, icon: Icon(Icons.message)),
+    );
+  }
+
+  Widget emailListTile() {
+    return ListTile(
+      leading: Icon(Icons.email),
+      title: Text("kakashi@uchiha.com"),
+      subtitle: Text("work"),
+    );
+  }
+
+  Widget addressListTile() {
+    return ListTile(
+      leading: Icon(Icons.location_on),
+      title: Text("Konoha"),
+      subtitle: Text("home"),
+      trailing: IconButton(onPressed: () {}, icon: Icon(Icons.directions)),
+    );
+  }
+}
